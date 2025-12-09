@@ -1,0 +1,70 @@
+name: Deploy .NET Framework App
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Build Docker image
+      run: |
+        docker build -t my-dotnet-app:latest .
+        
+    - name: Save Docker image
+      run: |
+        docker save -o my-dotnet-app.tar my-dotnet-app:latest
+        
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: docker-image
+        path: my-dotnet-app.tar
+        
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: docker-image
+        
+    - name: Deploy to server
+      uses: appleboy/ssh-action@v0.1.7
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        script: |
+          # Копируем образ на сервер
+          scp my-dotnet-app.tar ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/tmp/
+          
+          # Подключаемся к серверу и разворачиваем
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+          cd /tmp
+          
+          # Загружаем образ в Docker
+          docker load -i my-dotnet-app.tar
+          
+          # Останавливаем старый контейнер, если есть
+          docker stop my-dotnet-app || true
+          docker rm my-dotnet-app || true
+          
+          # Запускаем новый контейнер
+          docker run -d \
+            --name my-dotnet-app \
+            -p 5000:80 \
+            --restart unless-stopped \
+            my-dotnet-app:latest
+            
+          # Очищаем временные файлы
+          rm -f my-dotnet-app.tar
+          EOF
